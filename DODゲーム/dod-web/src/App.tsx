@@ -1,5 +1,22 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import './App.css';
+
+// Google Apps Script エンドポイント
+const GAS_URL = "https://script.google.com/macros/s/AKfycbwmCBURkSOU-2zMqJs9KNaeU8goohM0bSIsklu7oxyDhJQtLj6GEKa1TMVmAm3NRgoYQg/exec";
+
+const sendToGAS = async (data: object) => {
+  try {
+    await fetch(GAS_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(data),
+      redirect: 'follow' as RequestRedirect,
+    });
+  } catch (e) {
+    console.error('GAS送信エラー:', e);
+  }
+};
 
 // 型定義
 type Phase =
@@ -64,6 +81,13 @@ function App() {
   const [currentDice, setCurrentDice] = useState<number>(1);
   const [isRolling, setIsRolling] = useState(false);
   const [cardsToLose, setCardsToLose] = useState(0);
+
+  // データ収集
+  const [anonymousCode, setAnonymousCode] = useState('');
+  const [codeError, setCodeError] = useState(false);
+  const [startTime, setStartTime] = useState('');
+  const [lostCardsOrder, setLostCardsOrder] = useState<Array<{order: number; category: string; text: string}>>([]);
+  const hasSent = useRef(false);
 
   // 背景画像のパス
   const bgImage = `url('${import.meta.env.BASE_URL}assets/fantasy_bg.jpg')`;
@@ -138,6 +162,8 @@ function App() {
     const card = cards.find(c => c.id === cardId);
     if (!card || card.isLost) return;
 
+    const order = lostCardsOrder.length + 1;
+    setLostCardsOrder(prev => [...prev, { order, category: CATEGORY_LABELS[card.category], text: card.text }]);
     setCards(cards.map(c => c.id === cardId ? { ...c, isLost: true } : c));
     setCardsToLose(prev => prev - 1);
   };
@@ -154,6 +180,40 @@ function App() {
     }
   }, [cardsToLose, phase, cards]);
 
+  // thanks フェーズ到達時にゲームデータを GAS へ送信
+  useEffect(() => {
+    if (phase === 'thanks' && !hasSent.current) {
+      hasSent.current = true;
+      const endTime = new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().replace('Z', '');
+      const gameData = {
+        type: 'game',
+        game: 'Dice of Destiny',
+        anonymousCode,
+        startTime,
+        endTime,
+        timestamp: endTime,
+        stage1_cards: cards.map(c => ({ category: CATEGORY_LABELS[c.category], text: c.text })),
+        stage2_stories: cards
+          .filter(c => c.description)
+          .map(c => ({ category: CATEGORY_LABELS[c.category], text: c.text, story: c.description })),
+        stage3_lostCards: lostCardsOrder,
+        special_recipientName: recipientName,
+        special_message: finalMessage,
+      };
+      sendToGAS(gameData);
+    }
+  }, [phase]);
+
+  // タイトル画面表示時に localStorage から匿名コードを自動入力
+  useEffect(() => {
+    if (phase === 'title' && !anonymousCode) {
+      try {
+        const saved = localStorage.getItem('survey_anon_code');
+        if (saved) setAnonymousCode(saved);
+      } catch (e) {}
+    }
+  }, [phase]);
+
   // フェーズが変わるたびにスクロールを一番上に戻す
   useEffect(() => {
     const contentEl = document.querySelector('.content');
@@ -167,11 +227,28 @@ function App() {
   const renderTitle = () => (
     <div className="story-screen" style={{ flexDirection: 'column', textAlign: 'center', justifyContent: 'center' }}>
       <h1 style={{ fontSize: '4rem', marginBottom: '1rem', letterSpacing: '0.2rem', fontFamily: '"Times New Roman", Times, serif', fontWeight: 'bold', textShadow: '2px 2px 10px rgba(0,0,0,0.8)' }}>THE DICE OF DESTINY</h1>
-      <p style={{ fontSize: '1.2rem', marginBottom: '3rem', opacity: 1, textShadow: '1px 1px 5px rgba(0,0,0,0.8)' }}>The Educational Effects of Games about Loss: Focusing on well-being</p>
+      <p style={{ fontSize: '1.2rem', marginBottom: '2rem', opacity: 1, textShadow: '1px 1px 5px rgba(0,0,0,0.8)' }}>The Educational Effects of Games about Loss: Focusing on well-being</p>
+      <div style={{ marginBottom: '1.5rem', background: 'rgba(0,0,0,0.45)', borderRadius: '12px', padding: '1.2rem 1.8rem', display: 'inline-block' }}>
+        <p style={{ fontSize: '0.95rem', marginBottom: '0.2rem', color: '#ffffff', fontWeight: 'bold', textShadow: '0 1px 4px rgba(0,0,0,0.8)' }}>あなたの匿名コードが自動入力されています</p>
+        <p style={{ fontSize: '0.85rem', marginBottom: '0.8rem', color: '#E0E8FF', textShadow: '0 1px 4px rgba(0,0,0,0.8)' }}>先ほど作成したコードと一致していることを確認してください</p>
+        <input
+          type="text"
+          value={anonymousCode}
+          onChange={e => { setAnonymousCode(e.target.value.toUpperCase()); setCodeError(false); }}
+          placeholder="例: 0622-136"
+          maxLength={10}
+          style={{ padding: '0.7rem 1.2rem', fontSize: '1.4rem', borderRadius: '8px', border: codeError ? '2px solid #f07070' : '2px solid rgba(255,255,255,0.7)', background: 'rgba(255,255,255,0.2)', color: '#fff', textAlign: 'center', letterSpacing: '0.3rem', width: '240px', outline: 'none', fontWeight: 'bold', textShadow: '0 1px 6px rgba(0,0,0,0.9)' }}
+        />
+        {codeError && <p style={{ color: '#f07070', fontSize: '0.85rem', marginTop: '0.4rem' }}>匿名コードを入力してください（例: 0622-136）</p>}
+      </div>
       <button
         className="next-button"
         style={{ fontSize: '1.4rem', padding: '1.2rem 3rem', borderRadius: '50px', background: 'rgba(138, 43, 226, 0.6)', border: '2px solid white', boxShadow: '0 4px 15px rgba(0,0,0,0.5)' }}
-        onClick={() => setPhase('warning')}
+        onClick={() => {
+          if (!anonymousCode.trim()) { setCodeError(true); return; }
+          setStartTime(new Date(new Date().getTime() - new Date().getTimezoneOffset() * 60000).toISOString().replace('Z', ''));
+          setPhase('warning');
+        }}
       >
         体験を始める
       </button>
@@ -567,10 +644,23 @@ function App() {
           setCardsToLose(0);
           setRecipientName('');
           setFinalMessage('');
+          setAnonymousCode('');
+          setCodeError(false);
+          setStartTime('');
+          setLostCardsOrder([]);
+          hasSent.current = false;
         }}
       >
         タイトル画面へ
       </button>
+      <a
+        href="https://sunaonahito.github.io/game-survey/"
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{ display: 'inline-block', marginTop: '1rem', fontSize: '1.2rem', padding: '1rem 3rem', borderRadius: '50px', background: 'rgba(232,164,74,0.6)', border: '2px solid rgba(232,164,74,0.9)', color: '#fff', textDecoration: 'none', fontWeight: 'bold', boxShadow: '0 4px 15px rgba(0,0,0,0.4)' }}
+      >
+        体験後のご質問へ
+      </a>
     </div>
   );
 
